@@ -18,7 +18,7 @@ then `make purge && make` (or rely on CI's clean build).
 | RPC | Implementation |
 |---|---|
 | Health, Free, Status | Trivial; no engine dependency for Health |
-| LoadModel | `ds4_engine_open` + `ds4_session_create`; backend is compile-time (DS4_NO_GPU → CPU, __APPLE__ → Metal, otherwise CUDA) |
+| LoadModel | `ds4_engine_open` + `ds4_session_create`; backend is compile-time (DS4_NO_GPU → CPU, __APPLE__ → Metal, DS4_ROCM_BUILD → ROCm, otherwise CUDA) |
 | TokenizeString | `ds4_tokenize_text` |
 | Predict | `ds4_engine_generate_argmax` + `DsmlParser` → one ChatDelta with content / reasoning_content / tool_calls[] |
 | PredictStream | Same, per-token ChatDelta writes |
@@ -135,7 +135,13 @@ go test -count=1 -timeout=30m -v ./tests/e2e-backends/...
 | `cuda13-ds4` (amd64 + arm64) | Linux GHA + DGX Spark validation | Primary production path on Linux |
 | `ds4-darwin` (arm64) | macOS GHA runners | Metal; uses `scripts/build/ds4-darwin.sh` like llama-cpp-darwin |
 
-cuda12 is intentionally omitted. ROCm / Vulkan / SYCL are not applicable.
+cuda12 is intentionally omitted. Vulkan / SYCL are not applicable. ROCm is
+buildable locally with `BUILD_TYPE=hipblas` (the `rocm/dev-ubuntu-24.04:7.2.1`
+base) and a fat `AMDGPU_TARGETS` binary over the project's 10 supported targets;
+gfx1030 is excluded because rocWMMA has no RDNA2 support. It is not published
+by CI. The pinned upstream needs the local patches in
+`backend/cpp/ds4/patches/` (device-only `rsqrtf`, gfx11-only raw WMMA builtins);
+the Makefile applies them to the clone automatically.
 
 ## Hardware-gated validation
 

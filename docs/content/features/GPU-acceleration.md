@@ -223,6 +223,8 @@ LocalAI hipblas images are built against the following targets: gfx908, gfx90a, 
 
 If your device is not one of the above targets, you must specify the corresponding `GPU_TARGETS` and specify `REBUILD=true`. However, rebuilding will not help for architectures that lack rocBLAS kernel support in your ROCm version.
 
+The `ds4` backend is not published in the hipblas images, but can be built locally with `BUILD_TYPE=hipblas` against the same `rocm/dev-ubuntu-24.04:7.2.1` base. Its ROCm build covers 10 of the 11 targets above; gfx1030 (RDNA2) is excluded because rocWMMA has no RDNA2 support.
+
 ### Verified
 
 The devices in the following list have been tested with `hipblas` images.

@@ -141,3 +141,11 @@ formal-verification/out/
 /backend/go/gemxcpp/package/
 /backend/go/gemxcpp/gemxcpp
 addons/internal/uibuild/test/*/dist
+
+# Local ds4 ROCm backend packages (multi-GB; never commit them).
+/ds4-rocm/
+/ds4-rocm-gfx1100/
+/ds4-rocm-*.tgz
+/ds4-rocm*.zip
+/ds4-rocm*.7z
+/ds4-symlinks*.txt
