@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(TARGET grpc-server)
 
 option(DS4_NATIVE "Compile with -march=native / -mcpu=native" ON)
-set(DS4_GPU "cpu" CACHE STRING "GPU backend: cpu, cuda, or metal")
+set(DS4_GPU "cpu" CACHE STRING "GPU backend: cpu, cuda, metal, or rocm")
 set(DS4_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ds4" CACHE PATH "Path to cloned ds4 source")
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -79,6 +79,18 @@ if(DS4_GPU STREQUAL "cuda")
         "${DS4_DIR}/cuda/mmq/mmid.o"
         "${DS4_DIR}/cuda/mmq/mmvq.o"
         "${DS4_DIR}/cuda/mmq/ds4_repack.o")
+elseif(DS4_GPU STREQUAL "rocm")
+    list(APPEND DS4_OBJS
+        "${DS4_DIR}/ds4_engram.o"
+        "${DS4_DIR}/ds4_rocm.o"
+        "${DS4_DIR}/ds4_rocm_compat.o"
+        "${DS4_DIR}/ds4_rocm_unavailable.o"
+        "${DS4_DIR}/cuda/mmq/ds4_ggml_stubs.rocm.o"
+        "${DS4_DIR}/cuda/mmq/ds4_mmq.rocm.o"
+        "${DS4_DIR}/cuda/mmq/quantize.rocm.o"
+        "${DS4_DIR}/cuda/mmq/mmid.rocm.o"
+        "${DS4_DIR}/cuda/mmq/mmvq.rocm.o"
+        "${DS4_DIR}/cuda/mmq/d2r_stubs.rocm.o")
 elseif(DS4_GPU STREQUAL "metal")
     list(APPEND DS4_OBJS
         "${DS4_DIR}/ds4_engram.o"
@@ -118,9 +130,20 @@ target_link_libraries(${TARGET} PRIVATE
     Threads::Threads
     m)
 
+if(DS4_GPU STREQUAL "rocm")
+    file(GLOB _ROCM_LIB_DIRS /opt/rocm/lib /opt/rocm/lib64 /opt/rocm/hip/lib /opt/rocm-*/lib)
+    find_library(HIPRT_LIB amdhip64 REQUIRED HINTS ${_ROCM_LIB_DIRS})
+    find_library(HIPBLAS_LIB hipblas REQUIRED HINTS ${_ROCM_LIB_DIRS})
+    find_library(HIPBLASLT_LIB hipblaslt REQUIRED HINTS ${_ROCM_LIB_DIRS})
+    find_library(ROCBLAS_LIB rocblas REQUIRED HINTS ${_ROCM_LIB_DIRS})
+endif()
+
 if(DS4_GPU STREQUAL "cuda")
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(${TARGET} PRIVATE CUDA::cudart CUDA::cublas)
+elseif(DS4_GPU STREQUAL "rocm")
+    target_link_libraries(${TARGET} PRIVATE
+        ${HIPRT_LIB} ${HIPBLAS_LIB} ${HIPBLASLT_LIB} ${ROCBLAS_LIB})
 elseif(DS4_GPU STREQUAL "metal")
     find_library(FOUNDATION_LIB Foundation REQUIRED)
     find_library(METAL_LIB Metal REQUIRED)
@@ -156,6 +179,9 @@ target_link_libraries(ds4-worker PRIVATE Threads::Threads m)
 
 if(DS4_GPU STREQUAL "cuda")
     target_link_libraries(ds4-worker PRIVATE CUDA::cudart CUDA::cublas)
+elseif(DS4_GPU STREQUAL "rocm")
+    target_link_libraries(ds4-worker PRIVATE
+        ${HIPRT_LIB} ${HIPBLAS_LIB} ${HIPBLASLT_LIB} ${ROCBLAS_LIB})
 elseif(DS4_GPU STREQUAL "metal")
     target_link_libraries(ds4-worker PRIVATE ${FOUNDATION_LIB} ${METAL_LIB})
 elseif(DS4_GPU STREQUAL "cpu")

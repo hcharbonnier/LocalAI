@@ -1,0 +1,80 @@
+diff --git a/rocm/ds4_rocm_common.cuh b/rocm/ds4_rocm_common.cuh
+index c2f1aca..b7fda9f 100644
+--- a/rocm/ds4_rocm_common.cuh
++++ b/rocm/ds4_rocm_common.cuh
+@@ -15,6 +15,21 @@ static int ds4_rocm_is_gfx1151(void) {
+     return cached;
+ }
+ 
++/* The raw WMMA builtins only exist on the gfx11 family.  Keep this runtime
++ * check next to the launch sites so gfx9/gfx12 fall back to the generic
++ * shared-input kernel instead of launching a kernel their device image does
++ * not contain. */
++static int ds4_rocm_is_gfx11(void) {
++    static int cached = -1;
++    if (cached >= 0) return cached;
++    int dev = 0;
++    cudaDeviceProp prop;
++    cached = cudaGetDevice(&dev) == cudaSuccess &&
++             cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
++             strncmp(prop.gcnArchName, "gfx11", 5) == 0;
++    return cached;
++}
++
+ /* The tuned paths are the production default on gfx1151. Setting an
+  * individual selector to 0 keeps a simple fallback/debug escape hatch. */
+ static int ds4_rocm_gfx1151_flag(const char *name) {
+diff --git a/rocm/ds4_rocm_deepseek4_vision.cuh b/rocm/ds4_rocm_deepseek4_vision.cuh
+index aeb5217..641d48d 100644
+--- a/rocm/ds4_rocm_deepseek4_vision.cuh
++++ b/rocm/ds4_rocm_deepseek4_vision.cuh
+@@ -236,7 +236,7 @@ extern "C" int ds4_gpu_attention_visual_mixed_batch_heads_tensor(
+     if (!cuda_ok(cudaGetLastError(), "visual attention KV pack launch"))
+         return 0;
+ 
+-    const float alpha = rsqrtf((float)head_dim);
++    const float alpha = 1.0f / sqrtf((float)head_dim);
+     const float beta = 0.0f;
+     cublasStatus_t status = cublasSgemmStridedBatched(
+             g_cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+diff --git a/rocm/ds4_rocm_matmul.cuh b/rocm/ds4_rocm_matmul.cuh
+index 89276e7..56d40fc 100644
+--- a/rocm/ds4_rocm_matmul.cuh
++++ b/rocm/ds4_rocm_matmul.cuh
+@@ -559,7 +559,9 @@ static int cuda_matmul_q8_0_tensor_labeled(ds4_gpu_tensor *out, const void *mode
+             return cuda_ok(cudaGetLastError(),
+                            "matmul_q8_0 f32 tiny exact8 launch");
+         }
+-        if (!g_quality_mode && (in_dim % 32u) == 0u &&
++#if !defined(__HIP_DEVICE_COMPILE__) || defined(__GFX11__)
++        if (!g_quality_mode && ds4_rocm_is_gfx11() &&
++            (in_dim % 32u) == 0u &&
+             out_dim >= 1024u &&
+             n_tok >= 256u &&
+             in_dim <= UINT32_MAX && out_dim <= UINT32_MAX && n_tok <= UINT32_MAX) {
+@@ -590,6 +592,7 @@ static int cuda_matmul_q8_0_tensor_labeled(ds4_gpu_tensor *out, const void *mode
+                     blocks * 34u);
+             return cuda_ok(cudaGetLastError(), "matmul_q8_0 f32 batch wmma 8w launch");
+         }
++#endif
+ #endif
+         if ((in_dim & 31u) == 0u && out_dim <= UINT32_MAX && n_tok <= UINT32_MAX) {
+             const uint32_t rows_per_block = 32u;
+diff --git a/rocm/ds4_rocm_q8.cuh b/rocm/ds4_rocm_q8.cuh
+index efb5ab0..e4789f1 100644
+--- a/rocm/ds4_rocm_q8.cuh
++++ b/rocm/ds4_rocm_q8.cuh
+@@ -613,7 +613,12 @@ __global__ static void matmul_q8_0_f32_batch_sharedx_exact8_kernel(
+     }
+ }
+ 
+-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
++/* The kernel body uses gfx11-only WMMA builtins, so exclude it from device
++ * passes for every other architecture.  The host pass must still see it: the
++ * launch stub is host code, and the runtime gate in ds4_rocm_matmul.cuh keeps
++ * it from running on non-gfx11 devices. */
++#if (defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)) && \
++    (!defined(__HIP_DEVICE_COMPILE__) || defined(__GFX11__))
+ typedef _Float16 __attribute__((ext_vector_type(16))) ds4_q8_half16_t;
+ typedef float    __attribute__((ext_vector_type(8)))  ds4_q8_float8_t;
+ 

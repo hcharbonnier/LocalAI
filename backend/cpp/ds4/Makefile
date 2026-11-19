@@ -11,6 +11,10 @@ CURRENT_MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 BUILD_DIR := build
 
 BUILD_TYPE ?=
+# package.sh sources scripts/build/package-gpu-libs.sh, which dispatches on
+# BUILD_TYPE. Export it so a bare `make package` run outside Docker packages
+# the right GPU runtime closure too.
+export BUILD_TYPE
 NATIVE ?= false
 JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
@@ -79,6 +83,36 @@ else
 endif
 endif
 
+# ROCm (BUILD_TYPE=hipblas) drives upstream's strix-halo objects. Upstream's
+# ROCM_CFLAGS hardcodes a single --offload-arch=$(ROCM_ARCH), so restate the
+# flag set with the project-wide AMDGPU_TARGETS fat list (the same targets as
+# llama-cpp / audio-cpp / the CI workflows). ROCM_MMQ_FLAGS is :=-derived from
+# ROCM_CFLAGS upstream, so a command-line ROCM_CFLAGS= covers the mmq objects
+# too. Host TUs need upstream's strix-halo CFLAGS restated: -DDS4_ROCM_BUILD
+# selects the ROCm engine in ds4.c (the Linux default is CUDA). Every ROCm TU
+# (host C and hipcc .cu) also needs -fPIC: upstream links with hipcc, while
+# LocalAI links these prebuilt objects with g++/CMake, whose Ubuntu default is
+# PIE. Without it the link fails with R_X86_64_32 relocations in .bss. gfx1030
+# is excluded because rocWMMA has no RDNA2 support.
+comma := ,
+DS4_DEFAULT_AMDGPU_TARGETS := gfx908,gfx90a,gfx942,gfx950,gfx1100,gfx1101,gfx1102,gfx1151,gfx1200,gfx1201
+AMDGPU_TARGETS ?= $(DS4_DEFAULT_AMDGPU_TARGETS)
+ifeq ($(strip $(AMDGPU_TARGETS)),)
+    # A command-line `AMDGPU_TARGETS=` (the Dockerfile always forwards it, empty
+    # by default) outranks a plain assignment; override it so the fat default
+    # still applies.
+    override AMDGPU_TARGETS := $(DS4_DEFAULT_AMDGPU_TARGETS)
+endif
+DS4_OFFLOAD_FLAGS := $(foreach a,$(subst $(comma), ,$(AMDGPU_TARGETS)),--offload-arch=$(a))
+DS4_ROCM_CFLAGS := -O3 -ffast-math -g -fno-finite-math-only -fPIC -pthread \
+    -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument $(DS4_OFFLOAD_FLAGS)
+DS4_ROCM_MAKEVARS := ROCM_CFLAGS="$(DS4_ROCM_CFLAGS)"
+DS4_ROCM_HOST_CFLAGS := -O3 -ffast-math -g -Wall -Wextra -std=c99 \
+    -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD
+ifeq ($(NATIVE),true)
+    DS4_ROCM_HOST_CFLAGS += -march=native
+endif
+
 # Upstream splits image preprocessing, distributed inference, tensor-parallel
 # transport, the SSD expert cache, layer placement, and engram lookup into
 # GPU-agnostic translation units. They are shared by every GPU mode, so append
@@ -88,6 +122,12 @@ ifeq ($(BUILD_TYPE),cublas)
     DS4_OBJ_TARGET := ds4.o ds4_image.o ds4_cuda.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o ds4_engram.o \
         cuda/mmq/ds4_ggml_stubs.o cuda/mmq/ds4_mmq.o cuda/mmq/ds4_mmq_d2r.o \
         cuda/mmq/quantize.o cuda/mmq/mmid.o cuda/mmq/mmvq.o cuda/mmq/ds4_repack.o
+else ifeq ($(BUILD_TYPE),hipblas)
+    CMAKE_ARGS += -DDS4_GPU=rocm
+    DS4_OBJ_TARGET := ds4.o ds4_image.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o \
+        ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o ds4_engram.o \
+        cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o \
+        cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o
 else ifeq ($(UNAME_S),Darwin)
     CMAKE_ARGS += -DDS4_GPU=metal
     DS4_OBJ_TARGET := ds4.o ds4_image.o ds4_metal.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o ds4_engram.o
@@ -115,11 +155,28 @@ ds4:
 	git fetch --depth 1 origin $(DS4_VERSION) && \
 	git checkout FETCH_HEAD
 
+# Local patches carry the ROCm fixes ds4 needs on this project's ROCm 7.2.1
+# base (device-only rsqrtf, gfx11-only WMMA builtins). Apply them to the
+# pristine clone before any object is built. The reverse check makes the rule
+# idempotent if the stamp is ever lost while the tree still has the patches.
+DS4_PATCHES := $(sort $(wildcard $(CURRENT_MAKEFILE_DIR)patches/*.patch))
+ds4/.localai-patched: ds4 $(DS4_PATCHES)
+	cd ds4 && for p in $(DS4_PATCHES); do \
+		if git apply --reverse --check "$$p" >/dev/null 2>&1; then \
+			echo "ds4: $$p already applied"; \
+		else \
+			git apply "$$p" && echo "ds4: applied $$p"; \
+		fi; \
+	done
+	touch $@
+
 # Build ds4's engine object files via its own Makefile, which already encodes
 # the right per-platform compile flags (Objective-C/Metal on Darwin, nvcc on Linux+CUDA).
-ds4/ds4.o: ds4
+ds4/ds4.o: ds4/.localai-patched
 ifeq ($(BUILD_TYPE),cublas)
 	+$(MAKE) -C ds4 $(DS4_ARCH_MAKEVARS) $(DS4_OBJ_TARGET)
+else ifeq ($(BUILD_TYPE),hipblas)
+	+$(MAKE) -C ds4 $(DS4_ROCM_MAKEVARS) CFLAGS="$(DS4_ROCM_HOST_CFLAGS)" $(DS4_OBJ_TARGET)
 else ifeq ($(UNAME_S),Darwin)
 	+$(MAKE) -C ds4 ds4.o ds4_image.o ds4_metal.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o ds4_engram.o
 else
