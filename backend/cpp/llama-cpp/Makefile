@@ -1,6 +1,10 @@
 
-LLAMA_VERSION?=a37cc46104eb50900d5ab4a9ba02a0abdac039db
-LLAMA_REPO?=https://github.com/ggerganov/llama.cpp
+# Pinned to hcharbonnier/llama.cpp master, which carries the
+# feat/moe-streaming-core work (ggml-org/llama.cpp#25294) plus the direct-I/O /
+# mmap improvements and the latest quant/model commits.
+# Revert both lines to ggml-org/llama.cpp + a master SHA to go back to stock.
+LLAMA_VERSION?=e110d5cb5f6daad3295731b94a9f763237267815
+LLAMA_REPO?=https://github.com/hcharbonnier/llama.cpp
 
 CMAKE_ARGS?=
 BUILD_TYPE?=
