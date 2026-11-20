@@ -71,6 +71,14 @@ export function inferBackendPath(item) {
   if (item.backend === "trellis2cpp") {
     return `backend/go/trellis2cpp/`;
   }
+  // radiance is a Go backend (Dockerfile.radiance) wrapping the radiance HIP engine, living in
+  // backend/go/radiance/. Its Dockerfile suffix is neither "golang" nor a C++ family name, so
+  // without this branch the entry resolves to null and filterMatrix drops it entirely — the
+  // #10946 failure mode, where CI goes green having built nothing. The Dockerfile edit itself is
+  // matched separately by dockerfileChanged().
+  if (item.backend === "radiance") {
+    return `backend/go/radiance/`;
+  }
   if (item.dockerfile.endsWith("golang")) {
     return `backend/go/${item.backend}/`;
   }
@@ -212,10 +220,12 @@ const isWindowsGenericGo = item =>
 
 const isLinuxPython = item => item.dockerfile.endsWith("python");
 
-// Dockerfile.golang is the only Linux dockerfile that compiles Go (it runs
-// `make protogen-go && make -C backend/go/<backend> build`); every other one
-// builds C++, Rust or a Python venv and links no Go code at all.
-const isLinuxGo = item => item.dockerfile.endsWith("golang");
+// Dockerfile.golang and Dockerfile.radiance are the Linux dockerfiles that compile Go:
+// Dockerfile.golang runs `make protogen-go && make -C backend/go/<backend> build`, and
+// Dockerfile.radiance builds backend/go/radiance before assembling the engine tree. Every other
+// one builds C++, Rust or a Python venv and links no Go code at all.
+const isLinuxGo = item =>
+  item.dockerfile.endsWith("golang") || item.dockerfile.endsWith("radiance");
 
 const never = () => false;
 const always = () => true;

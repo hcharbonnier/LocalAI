@@ -1,0 +1,289 @@
+# syntax=docker/dockerfile:1
+
+# radiance: a LocalAI gRPC backend for radiance (https://codeberg.org/StillDeadcode/radiance),
+# an LLM inference engine for AMD GPUs. radiance is Apache-2.0 with a NOTICE, and the engine's
+# install tree carries the licenses of the components bundled into it.
+#
+# radiance publishes no release binaries, so the engine is compiled from the tagged source here.
+# The image is Linux/amd64 only: the device kernels are HIP, and upstream publishes kernel
+# libraries for exactly gfx1201 (RDNA4), gfx11-generic (every RDNA3 chip) and gfx1151 (Strix
+# Halo). There is no CUDA, Vulkan or Darwin (Metal) build.
+#
+# BASE_IMAGE is the ROCm toolchain the engine links against and the source of the runtime
+# libraries copied into the shipped image. It must match the `base-image` of this backend's entry
+# in .github/backend-matrix.yml; the engine is built against ROCm 10.1 (the tag's toolchain).
+#
+# Like every other LocalAI backend image, the last stage is FROM scratch: the image is a file
+# tree the gallery extracts next to the other backends, not a container with a process. The
+# gallery launcher (backend/go/radiance/run.sh, copied in below) execs the Go backend on the
+# address LocalAI passes with --addr, and the Go backend starts radiance-engine per model load.
+# Nothing here starts the engine: there is deliberately no ENTRYPOINT or CMD, matching
+# Dockerfile.golang's final stage.
+#
+# Image layout (all paths relative to the extracted backend directory):
+#   run.sh                              gallery launcher, execs ./radiance "$@"
+#   radiance                            the Go backend (CGO_ENABLED=0)
+#   radiance-engine -> opt/radiance/bin/radiance-engine
+#   opt/radiance/bin/radiance-engine    the engine, named as its contract expects
+#   opt/radiance/libexec/radiance/      hfget.sh, found as <bin>/../libexec/radiance
+#   opt/radiance/share/radiance/        RADIANCE_HOME: kernels, recipes, vectors, .rkb fixtures
+#   opt/radiance/share/doc/radiance/    LICENSE, NOTICE and the bundled third-party licenses
+#   lib/                                the ROCm runtime and its transitive dependencies
+#   usr/share/doc/radiance/             the same license set, for image-level compliance
+#   usr/share/doc/THIRD-PARTY           package, version and license of every library in lib/
+#
+# run.sh must set RADIANCE_HOME and RADIANCE_ENGINE_PATH relative to its own directory (the ENV
+# below is only the absolute default, correct when the image is run as a container). The engine
+# also records /opt/radiance/share/radiance as its compiled-in default, which is why the install
+# prefix is fixed at configure time rather than moved afterwards.
+
+ARG BASE_IMAGE=rocm/dev-ubuntu-24.04:10.1.0-full
+ARG APT_MIRROR=""
+ARG APT_PORTS_MIRROR=""
+
+# ============================================================================
+# Stage 1: compile and install the engine on the ROCm toolchain image.
+# ============================================================================
+FROM ${BASE_IMAGE} AS radiance-engine
+ARG APT_MIRROR
+ARG APT_PORTS_MIRROR
+# The one place that names the upstream release. v2.2.0 is commit b6b8751ccc; the tag and the
+# commit are both checked after the clone so a force-moved tag cannot silently change the build.
+# RADIANCE_COMMIT is the short form the release was pinned to.
+ARG RADIANCE_VERSION=v2.2.0
+ARG RADIANCE_COMMIT=b6b8751ccc
+ARG RADIANCE_REPO=https://codeberg.org/StillDeadcode/radiance
+# Upstream's published kernel targets, and the only ones this image serves. Naming them is
+# required: a build container has no card to enumerate, so RAD_WITH_HIP=AUTO would find hipcc and
+# then decline the device build for lack of a visible GPU.
+ARG RADIANCE_GPU_TARGETS="gfx1201;gfx11-generic;gfx1151"
+# Empty means one compile job per core. A device-kernel translation unit needs 2-3 GB of RAM, so
+# lower this on a host that is also serving.
+ARG RADIANCE_JOBS=
+# The fast suite is host-only (`ctest -L fast`), but it builds and runs a large set of test
+# binaries on top of the engine. Off by default; set true for a release gate that has the time.
+ARG RADIANCE_RUN_TESTS=false
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ROCM_PATH=/opt/rocm \
+    HIP_PATH=/opt/rocm \
+    CC=gcc-14 \
+    CXX=g++-14
+
+# g++-14 rather than the image's default: hipcc compiles device translation units against its
+# libstdc++, which is also the one the host code and the tests use. libopenblas-dev lets libquant
+# factorise its Hessians through LAPACK; gawk is what tools/ops_doc_check.sh needs (mawk lacks
+# gensub) when the fast tests run. The ROCm toolchain comes from BASE_IMAGE.
+RUN --mount=type=bind,source=.docker/apt-mirror.sh,target=/usr/local/sbin/apt-mirror \
+    APT_MIRROR="${APT_MIRROR}" APT_PORTS_MIRROR="${APT_PORTS_MIRROR}" sh /usr/local/sbin/apt-mirror && \
+    sh /usr/local/sbin/apt-mirror apt-get update && \
+    sh /usr/local/sbin/apt-mirror apt-get install -y --no-install-recommends \
+        git cmake ninja-build pkg-config ca-certificates g++-14 gawk libopenblas-dev && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${RADIANCE_VERSION}" "${RADIANCE_REPO}" radiance && \
+    cd radiance && \
+    test "$(git describe --tags --exact-match)" = "${RADIANCE_VERSION}" && \
+    git rev-parse HEAD | grep -q "^${RADIANCE_COMMIT}" && \
+    echo "==> radiance ${RADIANCE_VERSION} at $(git rev-parse HEAD)"
+
+# The prefix is fixed at configure time because the default RADIANCE_HOME is compiled in as
+# <prefix>/share/radiance; DESTDIR stages the tree without moving that default. RAD_WITH_FFMPEG is
+# pinned OFF rather than left AUTO so the build does not depend on whether the image happens to
+# carry the libav* development packages: without them the engine refuses image, video and audio
+# request parts and serves text.
+#
+# RAD_HIP_VOPD_REPEATABLE stays at its OFF default on purpose. Upstream's own image rebuilds
+# ROCm's libLLVM with a VOPD-pairing patch and turns it ON; this image uses the stock ROCm 10.1
+# compiler, whose pairing is not repeatable, so pairing is disabled. Correctness is unaffected.
+RUN cmake -S /src/radiance -B /build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX=/opt/radiance \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DRAD_WITH_HIP=ON \
+        -DRAD_WITH_FFMPEG=OFF \
+        "-DRAD_GPU_TARGETS=${RADIANCE_GPU_TARGETS}" \
+        -DRAD_BUILD_TESTS="${RADIANCE_RUN_TESTS}" && \
+    cmake --build /build --parallel "${RADIANCE_JOBS:-$(nproc)}"
+
+RUN if [ "${RADIANCE_RUN_TESTS}" = "true" ]; then \
+        ctest --test-dir /build -L fast --output-on-failure --parallel "$(nproc)"; \
+    fi
+
+# The source install puts LICENSE, NOTICE and the bundled components' licenses in
+# share/doc/radiance. The recipes are not installed by CMake (upstream's own image copies them
+# after `cmake --install`), and the engine needs them in RADIANCE_HOME/recipes. The installed
+# binary is renamed to radiance-engine in place so <bin>/../libexec/radiance still resolves; no
+# `radiance` alias is left beside it, so the only executable called `radiance` in the shipped
+# image is the Go backend at the tree root.
+RUN set -eu; \
+    DESTDIR=/stage cmake --install /build; \
+    install -d /stage/opt/radiance/share/radiance/recipes; \
+    cp /src/radiance/data/recipes/*.recipe /stage/opt/radiance/share/radiance/recipes/; \
+    mv /stage/opt/radiance/bin/radiance /stage/opt/radiance/bin/radiance-engine; \
+    test -x /stage/opt/radiance/bin/radiance-engine; \
+    test -f /stage/opt/radiance/share/doc/radiance/LICENSE; \
+    test -f /stage/opt/radiance/share/doc/radiance/NOTICE; \
+    test -f /stage/opt/radiance/libexec/radiance/hfget.sh; \
+    ls /stage/opt/radiance/share/radiance/
+
+# ============================================================================
+# Stage 2: the Go backend. CGO_ENABLED=0, so the shipped binary has no shared
+# libraries of its own; the engine it spawns carries the ROCm dependency.
+# ============================================================================
+FROM golang:1.26-bookworm AS go-backend
+ARG BACKEND=radiance
+ENV CGO_ENABLED=0
+ENV DEBIAN_FRONTEND=noninteractive
+
+# make runs protogen-go, which downloads protoc 31.1 with curl/unzip and installs the pinned
+# protoc-gen-go plugins; git and ca-certificates are for the module and tool downloads.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git ca-certificates curl unzip make && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /LocalAI
+COPY . .
+RUN git config --global --add safe.directory /LocalAI
+
+# protogen-go generates pkg/grpc/proto and pkg/motion/proto, exactly as Dockerfile.golang does
+# before building any Go backend.
+RUN make protogen-go
+
+# The binary is built from the backend directory so the module's other packages are pulled in
+# normally. -trimpath and -buildvcs keep build paths and the LocalAI commit out of the binary;
+# the image tag identifies the build.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/go/pkg/mod \
+    mkdir -p /out && \
+    cd backend/go/${BACKEND} && \
+    go build -trimpath -buildvcs=false -ldflags "-s -w" -o /out/radiance ./
+
+RUN test -x /out/radiance
+
+# ============================================================================
+# Stage 3: assemble the backend tree and bundle the minimal ROCm runtime.
+#
+# This stage runs on the same ROCm base only to take the runtime libraries from it: the engine's
+# shared-library closure is resolved here with the repo's package-gpu-libs.sh (the same script
+# every hipblas backend calls), so the shipped image carries exactly those and no distribution.
+# ============================================================================
+FROM ${BASE_IMAGE} AS package
+ARG BACKEND=radiance
+# The matrix passes the build type; the default keeps `docker build -f backend/Dockerfile.radiance .`
+# working on its own and picking the ROCm library set.
+ARG BUILD_TYPE=hipblas
+ARG RADIANCE_VERSION=v2.2.0
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Only the run-time trees travel: include/ and lib/cmake/ are developer artefacts the backend
+# never reads, and dropping them keeps the extracted image small.
+COPY --from=radiance-engine /stage/opt/radiance/bin /out/opt/radiance/bin
+COPY --from=radiance-engine /stage/opt/radiance/libexec /out/opt/radiance/libexec
+COPY --from=radiance-engine /stage/opt/radiance/share /out/opt/radiance/share
+COPY --from=go-backend /out/radiance /out/radiance
+# The launcher belongs to the Go backend unit, like every other Go backend's run.sh. It is the
+# gallery entrypoint and is responsible for exporting RADIANCE_HOME and RADIANCE_ENGINE_PATH
+# relative to itself once the tree has been extracted out of /.
+COPY backend/go/${BACKEND}/run.sh /out/run.sh
+COPY scripts/build/package-gpu-libs.sh /usr/local/sbin/package-gpu-libs.sh
+
+RUN set -eu; \
+    chmod 0755 /out/radiance /out/run.sh; \
+    ln -s opt/radiance/bin/radiance-engine /out/radiance-engine; \
+    mkdir -p /out/lib; \
+    BUILD_TYPE="${BUILD_TYPE}" bash /usr/local/sbin/package-gpu-libs.sh /out/lib; \
+    ls /out/lib/libamdhip64.so* >/dev/null; \
+    ls /out/lib/libhsa-runtime64.so* >/dev/null; \
+    LD_LIBRARY_PATH=/out/lib ldd /out/opt/radiance/bin/radiance-engine > /tmp/engine.ldd 2>&1 || true; \
+    if grep -q 'not found' /tmp/engine.ldd; then \
+        echo "the engine has unresolved libraries with /out/lib on the path:" >&2; \
+        cat /tmp/engine.ldd >&2; \
+        exit 1; \
+    fi; \
+    for plugin in /out/opt/radiance/share/radiance/kernels/*.so; do \
+        [ -e "$plugin" ] || continue; \
+        LD_LIBRARY_PATH=/out/lib ldd "$plugin" > /tmp/plugin.ldd 2>&1 || true; \
+        if grep -q 'not found' /tmp/plugin.ldd; then \
+            echo "$plugin has unresolved libraries:" >&2; \
+            cat /tmp/plugin.ldd >&2; \
+            exit 1; \
+        fi; \
+    done; \
+    echo "==> runtime closure resolves"
+
+# Licenses: the engine's own LICENSE, NOTICE and the bundled components' licenses come from the
+# install tree, and every shared library in lib/ is recorded with the package that owns it and
+# that package's copyright file, so no GPL/LGPL runtime ships unrecorded. /usr/share/common-licenses
+# travels with them because Ubuntu's copyright files reference those texts by path.
+RUN set -eu; \
+    doc=/out/usr/share/doc; \
+    mkdir -p "$doc"; \
+    cp -a /out/opt/radiance/share/doc/radiance "$doc/radiance"; \
+    if [ -d /usr/share/common-licenses ]; then \
+        cp -a /usr/share/common-licenses /out/usr/share/; \
+    fi; \
+    { \
+        echo 'Third-party software in this image'; \
+        echo '=================================='; \
+        echo; \
+        echo "radiance ${RADIANCE_VERSION} is under the Apache License 2.0; its LICENSE, NOTICE and"; \
+        echo 'the licenses of the components bundled into it are in'; \
+        echo '/usr/share/doc/radiance/ (third_party/ for the vendored libraries).'; \
+        echo; \
+        echo 'The shared libraries under /lib are the ROCm runtime the engine loads. Each'; \
+        echo 'entry below names the package that owns it at the version in this build and the'; \
+        echo 'license files under /usr/share/doc/<package>/.'; \
+    } > "$doc/THIRD-PARTY"; \
+    : > /tmp/recorded-libs; \
+    for f in /out/lib/*.so*; do \
+        [ -e "$f" ] || continue; \
+        base=$(basename "$(readlink -f "$f")"); \
+        grep -qxF "$base" /tmp/recorded-libs && continue; \
+        echo "$base" >> /tmp/recorded-libs; \
+        pkg=$(dpkg-query -S "*/$base" 2>/dev/null | grep -v '^diversion ' | head -1 | cut -d: -f1) || true; \
+        if [ -z "$pkg" ]; then \
+            { echo; echo "$base"; echo '  source:  no owning package in the build image'; echo '  license: not recorded'; } >> "$doc/THIRD-PARTY"; \
+            continue; \
+        fi; \
+        ver=$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || echo unknown); \
+        if dpkg-query -L "$pkg" 2>/dev/null | grep -q '^/opt/rocm'; then \
+            src='ROCm, https://github.com/ROCm'; \
+        else \
+            src=$(dpkg-query -W -f='${source:Package} ${source:Version}' "$pkg" 2>/dev/null || echo unknown); \
+        fi; \
+        mkdir -p "$doc/$pkg"; \
+        cp /usr/share/doc/"$pkg"/copyright "$doc/$pkg/" 2>/dev/null || true; \
+        { echo; echo "$base ($pkg $ver)"; echo "  source:  $src"; echo "  license: /usr/share/doc/$pkg/"; } >> "$doc/THIRD-PARTY"; \
+    done; \
+    cat "$doc/THIRD-PARTY"
+
+# ============================================================================
+# Stage 4: the shipped image. A scratch file tree, NO entrypoint/CMD/WORKDIR,
+# matching Dockerfile.golang's final stage. The gallery launcher
+# (backend/go/radiance/run.sh) is what starts the Go backend.
+# ============================================================================
+FROM scratch
+ARG RADIANCE_GPU_TARGETS="gfx1201;gfx11-generic;gfx1151"
+ARG RADIANCE_VERSION=v2.2.0
+ARG RADIANCE_COMMIT=b6b8751ccc
+
+LABEL org.opencontainers.image.title="LocalAI radiance backend" \
+      org.opencontainers.image.description="radiance HIP inference engine for AMD GPUs, wrapped as a LocalAI gRPC backend" \
+      org.opencontainers.image.version="${RADIANCE_VERSION}" \
+      org.opencontainers.image.revision="${RADIANCE_COMMIT}" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      localai.backend="radiance" \
+      localai.build-type="hipblas" \
+      radiance.gpu-targets="${RADIANCE_GPU_TARGETS}"
+
+# The absolute defaults for a container run. When the tree is extracted into a backend directory,
+# run.sh overrides both with paths relative to itself; the engine's compiled-in default is the
+# same /opt/radiance/share/radiance.
+ENV RADIANCE_HOME=/opt/radiance/share/radiance \
+    RADIANCE_ENGINE_PATH=/opt/radiance/bin/radiance-engine
+
+COPY --from=package /out/ /
