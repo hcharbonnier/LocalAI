@@ -175,7 +175,7 @@ var _ = Describe("BackendPreferenceTokens", func() {
 	It("carries no engine name in any capability's tokens", func() {
 		// The generic form of the lock above: whatever anyone adds to the build
 		// tag table later, an engine name in it is a merged vocabulary.
-		engineNames := []string{"vllm", "sglang", "llama-cpp", "mlx"}
+		engineNames := []string{"vllm", "sglang", "radiance", "llama-cpp", "mlx"}
 		for _, capability := range []string{"nvidia", AMD, Intel, metal, darwinX86, vulkan, windows, "default"} {
 			Expect(tokensFor(capability)).ToNot(ContainElements(engineNames),
 				"capability %q leaked an engine name into the build tag table", capability)
@@ -224,8 +224,13 @@ var _ = Describe("EnginePreferenceTokens", func() {
 		Expect(tokensFor(metal)).To(Equal([]string{"mlx", "llama-cpp"}))
 	})
 
+	It("prefers the ROCm-native engine on an AMD host", func() {
+		// Radiance only targets AMD, so a model that declares a radiance build
+		// is declaring the build worth running on this host.
+		Expect(tokensFor(AMD)).To(Equal([]string{"radiance", "vllm", "sglang", "llama-cpp"}))
+	})
+
 	It("gives the GPU serving engines to every vendor that has builds of them", func() {
-		Expect(tokensFor(AMD)).To(Equal([]string{"vllm", "sglang", "llama-cpp"}))
 		Expect(tokensFor(Intel)).To(Equal([]string{"vllm", "sglang", "llama-cpp"}))
 	})
 
@@ -361,7 +366,7 @@ var _ = Describe("ServingFeaturePreferenceTokens", func() {
 		// entry's declared tags, where it means nothing.
 		Expect(ServingFeaturePreferenceTokens()).ToNot(ContainElements(
 			"cuda", "rocm", "hip", "sycl", "metal", "vulkan", "cpu", "darwin-x86",
-			"vllm", "sglang", "llama-cpp", "mlx",
+			"vllm", "sglang", "radiance", "llama-cpp", "mlx",
 		))
 	})
 
