@@ -6681,6 +6681,23 @@ include:
     dockerfile: "./backend/Dockerfile.golang"
     context: "./"
     ubuntu-version: '2404'
+  # radiance is built from source at the pinned tag inside backend/Dockerfile.radiance: upstream
+  # publishes no release binaries. AMD ROCm only, and Linux/amd64 only: the engine's device
+  # kernels are HIP and upstream ships them for gfx1201, gfx11-generic and gfx1151. There is no
+  # CUDA, Vulkan or Darwin (Metal) entry, and none can be added without a build of the engine.
+  - build-type: 'hipblas'
+    cuda-major-version: ""
+    cuda-minor-version: ""
+    platforms: 'linux/amd64'
+    tag-latest: 'auto'
+    tag-suffix: '-gpu-rocm-hipblas-radiance'
+    runs-on: 'ubuntu-latest'
+    base-image: "rocm/dev-ubuntu-24.04:10.1.0-full"
+    skip-drivers: 'false'
+    backend: "radiance"
+    dockerfile: "./backend/Dockerfile.radiance"
+    context: "./"
+    ubuntu-version: '2404'
 
 # Darwin matrix (consumed by backend-jobs-darwin).
 includeDarwin:

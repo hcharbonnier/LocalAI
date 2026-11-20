@@ -308,6 +308,74 @@ test("audio-cpp resolves to its C++ sources on Darwin, not backend/go", () => {
 });
 
 // ---------------------------------------------------------------------------
+// radiance: a Go backend (Dockerfile.radiance) wrapping a HIP engine built in-image
+// ---------------------------------------------------------------------------
+
+// A radiance entry as it appears in .github/backend-matrix.yml: hipblas, amd64, rocm base, and a
+// Dockerfile suffix ("radiance") that is neither "golang" nor a C++ family name.
+const radiance = {
+  backend: "radiance",
+  dockerfile: "./backend/Dockerfile.radiance",
+  "tag-suffix": "-gpu-rocm-hipblas-radiance",
+  "build-type": "hipblas",
+  "base-image": "rocm/dev-ubuntu-24.04:10.1.0-full",
+};
+
+const runRadiance = changedFiles =>
+  filterMatrix({
+    includes: [radiance],
+    includesDarwin,
+    includesWindows,
+    changedFiles,
+  });
+
+test("radiance maps to its Go backend source directory", () => {
+  // Without the explicit case the suffix resolves to null and filterMatrix drops every radiance
+  // entry, so a PR touching only this backend gets no CI job and looks green for the wrong reason.
+  assert.equal(inferBackendPath(radiance), "backend/go/radiance/");
+});
+
+test("radiance source changes rebuild radiance and nothing else", () => {
+  const { filtered, filteredDarwin, changedBackends } = runRadiance([
+    "backend/go/radiance/main.go",
+  ]);
+
+  assert.deepEqual(names(filtered), ["radiance"]);
+  assert.deepEqual(filteredDarwin, []);
+  assert.deepEqual([...changedBackends], ["radiance"]);
+});
+
+test("Dockerfile.radiance rebuilds only radiance", () => {
+  // The Dockerfile lives outside every backend directory, so the prefix match cannot see it;
+  // the entry's own dockerfile field is what has to carry it.
+  const { filtered } = runRadiance(["backend/Dockerfile.radiance"]);
+
+  assert.deepEqual(names(filtered), ["radiance"]);
+});
+
+test("a pkg/ subtree linked into Go backends rebuilds radiance", () => {
+  // Dockerfile.radiance compiles backend/go/radiance from the LocalAI module, so the pkg/
+  // subtrees that end up in every Go backend binary invalidate it too. isLinuxGo has to know the
+  // dockerfile suffix, not just "golang".
+  for (const file of [
+    "pkg/grpc/server.go",
+    "pkg/audio/convert.go",
+    "pkg/utils/path.go",
+  ]) {
+    const { filtered } = runRadiance([file]);
+    assert.deepEqual(names(filtered), ["radiance"], `expected ${file} to rebuild radiance`);
+  }
+});
+
+test("radiance has no Darwin entry to rebuild", () => {
+  // Linux/amd64 only: the engine's device kernels are HIP. This pins that a source change never
+  // leaks into the Darwin matrix through the generic Go path.
+  const { filteredDarwin } = runRadiance(["backend/go/radiance/main.go"]);
+
+  assert.deepEqual(filteredDarwin, []);
+});
+
+// ---------------------------------------------------------------------------
 // Windows: native windows/amd64 backend images built under MSYS2
 // ---------------------------------------------------------------------------
 
