@@ -29475,3 +29475,69 @@
   uri: quay.io/go-skynet/local-ai-backends:master-metal-darwin-arm64-strata
   mirrors:
     - localai/localai-backends:master-metal-darwin-arm64-strata
+- name: radiance
+  alias: radiance
+  license: Apache-2.0
+  description: |
+    StillDeadcode/radiance - an Apache-2.0 C++20/HIP inference server for AMD
+    ROCm on Linux. LocalAI launches the engine as a child process through the
+    radiance backend in backend/go/radiance.
+  urls:
+    - https://codeberg.org/StillDeadcode/radiance
+    - https://github.com/mudler/LocalAI/tree/master/backend/go/radiance
+  tags:
+    - text-to-text
+    - HIP
+  capabilities:
+    amd: rocm-radiance
+- name: radiance-development
+  alias: radiance
+  license: Apache-2.0
+  description: |
+    StillDeadcode/radiance - an Apache-2.0 C++20/HIP inference server for AMD
+    ROCm on Linux. LocalAI launches the engine as a child process through the
+    radiance backend in backend/go/radiance.
+  urls:
+    - https://codeberg.org/StillDeadcode/radiance
+    - https://github.com/mudler/LocalAI/tree/master/backend/go/radiance
+  tags:
+    - text-to-text
+    - HIP
+  capabilities:
+    amd: rocm-radiance-development
+- name: rocm-radiance
+  alias: radiance
+  license: Apache-2.0
+  description: |
+    StillDeadcode/radiance - an Apache-2.0 C++20/HIP inference server for AMD
+    ROCm on Linux. LocalAI launches the engine as a child process through the
+    radiance backend in backend/go/radiance.
+  urls:
+    - https://codeberg.org/StillDeadcode/radiance
+    - https://github.com/mudler/LocalAI/tree/master/backend/go/radiance
+  tags:
+    - text-to-text
+    - HIP
+  capabilities:
+    amd: rocm-radiance
+  uri: quay.io/go-skynet/local-ai-backends:latest-gpu-rocm-hipblas-radiance
+  mirrors:
+    - localai/localai-backends:latest-gpu-rocm-hipblas-radiance
+- name: rocm-radiance-development
+  alias: radiance
+  license: Apache-2.0
+  description: |
+    StillDeadcode/radiance - an Apache-2.0 C++20/HIP inference server for AMD
+    ROCm on Linux. LocalAI launches the engine as a child process through the
+    radiance backend in backend/go/radiance.
+  urls:
+    - https://codeberg.org/StillDeadcode/radiance
+    - https://github.com/mudler/LocalAI/tree/master/backend/go/radiance
+  tags:
+    - text-to-text
+    - HIP
+  capabilities:
+    amd: rocm-radiance-development
+  uri: quay.io/go-skynet/local-ai-backends:master-gpu-rocm-hipblas-radiance
+  mirrors:
+    - localai/localai-backends:master-gpu-rocm-hipblas-radiance
