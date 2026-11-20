@@ -114,14 +114,14 @@ RUN if [ "${RADIANCE_RUN_TESTS}" = "true" ]; then \
 # The source install puts LICENSE, NOTICE and the bundled components' licenses in
 # share/doc/radiance. The recipes are not installed by CMake (upstream's own image copies them
 # after `cmake --install`), and the engine needs them in RADIANCE_HOME/recipes. The installed
-# binary is renamed to radiance-engine in place so <bin>/../libexec/radiance still resolves, and a
-# `radiance` symlink is kept beside it for upstream tooling that calls the binary by that name.
+# binary is renamed to radiance-engine in place so <bin>/../libexec/radiance still resolves; no
+# `radiance` alias is left beside it, so the only executable called `radiance` in the shipped
+# image is the Go backend at the tree root.
 RUN set -eu; \
     DESTDIR=/stage cmake --install /build; \
     install -d /stage/opt/radiance/share/radiance/recipes; \
     cp /src/radiance/data/recipes/*.recipe /stage/opt/radiance/share/radiance/recipes/; \
     mv /stage/opt/radiance/bin/radiance /stage/opt/radiance/bin/radiance-engine; \
-    ln -s radiance-engine /stage/opt/radiance/bin/radiance; \
     test -x /stage/opt/radiance/bin/radiance-engine; \
     test -f /stage/opt/radiance/share/doc/radiance/LICENSE; \
     test -f /stage/opt/radiance/share/doc/radiance/NOTICE; \
@@ -173,11 +173,17 @@ RUN test -x /out/radiance
 # ============================================================================
 FROM ${BASE_IMAGE} AS package
 ARG BACKEND=radiance
-ARG BUILD_TYPE
+# The matrix passes the build type; the default keeps `docker build -f backend/Dockerfile.radiance .`
+# working on its own and picking the ROCm library set.
+ARG BUILD_TYPE=hipblas
 ARG RADIANCE_VERSION=v2.2.0
 ENV DEBIAN_FRONTEND=noninteractive
 
-COPY --from=radiance-engine /stage/opt/radiance /out/opt/radiance
+# Only the run-time trees travel: include/ and lib/cmake/ are developer artefacts the backend
+# never reads, and dropping them keeps the extracted image small.
+COPY --from=radiance-engine /stage/opt/radiance/bin /out/opt/radiance/bin
+COPY --from=radiance-engine /stage/opt/radiance/libexec /out/opt/radiance/libexec
+COPY --from=radiance-engine /stage/opt/radiance/share /out/opt/radiance/share
 COPY --from=go-backend /out/radiance /out/radiance
 # The launcher belongs to the Go backend unit, like every other Go backend's run.sh. It is the
 # gallery entrypoint and is responsible for exporting RADIANCE_HOME and RADIANCE_ENGINE_PATH
@@ -192,7 +198,7 @@ RUN set -eu; \
     BUILD_TYPE="${BUILD_TYPE}" bash /usr/local/sbin/package-gpu-libs.sh /out/lib; \
     ls /out/lib/libamdhip64.so* >/dev/null; \
     ls /out/lib/libhsa-runtime64.so* >/dev/null; \
-    LD_LIBRARY_PATH=/out/lib ldd /out/opt/radiance/bin/radiance-engine > /tmp/engine.ldd; \
+    LD_LIBRARY_PATH=/out/lib ldd /out/opt/radiance/bin/radiance-engine > /tmp/engine.ldd 2>&1 || true; \
     if grep -q 'not found' /tmp/engine.ldd; then \
         echo "the engine has unresolved libraries with /out/lib on the path:" >&2; \
         cat /tmp/engine.ldd >&2; \
@@ -200,7 +206,7 @@ RUN set -eu; \
     fi; \
     for plugin in /out/opt/radiance/share/radiance/kernels/*.so; do \
         [ -e "$plugin" ] || continue; \
-        LD_LIBRARY_PATH=/out/lib ldd "$plugin" > /tmp/plugin.ldd; \
+        LD_LIBRARY_PATH=/out/lib ldd "$plugin" > /tmp/plugin.ldd 2>&1 || true; \
         if grep -q 'not found' /tmp/plugin.ldd; then \
             echo "$plugin has unresolved libraries:" >&2; \
             cat /tmp/plugin.ldd >&2; \
@@ -217,7 +223,9 @@ RUN set -eu; \
     doc=/out/usr/share/doc; \
     mkdir -p "$doc"; \
     cp -a /out/opt/radiance/share/doc/radiance "$doc/radiance"; \
-    cp -a /usr/share/common-licenses /out/usr/share/; \
+    if [ -d /usr/share/common-licenses ]; then \
+        cp -a /usr/share/common-licenses /out/usr/share/; \
+    fi; \
     { \
         echo 'Third-party software in this image'; \
         echo '=================================='; \
