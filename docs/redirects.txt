@@ -148,6 +148,7 @@
 /features/pages-reference/
 /features/pikvm/
 /features/quantization/
+/features/radiance/
 /features/reranker/
 /features/rkllm/
 /features/runtime-settings/
@@ -213,6 +214,7 @@
 /models/engines/
 /models/engines/audio-cpp/
 /models/engines/nemo-speech-cpp/
+/models/engines/radiance/
 /models/engines/rkllm/
 /models/engines/strata/
 /models/engines/vllm-cpp/
