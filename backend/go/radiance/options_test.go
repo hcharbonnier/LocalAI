@@ -156,6 +156,15 @@ var _ = Describe("options", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
+		It("rejects an existing but unsupported path under the models directory", func() {
+			dir := GinkgoT().TempDir()
+			Expect(os.MkdirAll(filepath.Join(dir, "m"), 0o750)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(dir, "m", "notes.txt"), []byte("x"), 0o600)).To(Succeed())
+			_, _, err := locateModel(&pb.ModelOptions{Model: "m", ModelFile: "m", ModelPath: dir})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not a"))
+		})
+
 		It("rejects an empty model", func() {
 			_, _, err := locateModel(&pb.ModelOptions{})
 			Expect(err).To(HaveOccurred())

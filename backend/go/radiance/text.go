@@ -102,6 +102,9 @@ type textResponse struct {
 // textRequest picks the chat endpoint when core sent structured messages;
 // otherwise the prompt is already rendered and completions takes it verbatim.
 func (ep *endpoint) textRequest(opts *pb.PredictOptions, stream bool) (string, *textRequest) {
+	if dropped := unforwardedFields(opts); len(dropped) > 0 {
+		xlog.Warn("radiance: request fields are not forwarded", "fields", dropped)
+	}
 	req := &textRequest{
 		Model:            ep.model,
 		Stream:           stream,
@@ -169,6 +172,25 @@ func rawJSON(s string) json.RawMessage {
 	return json.RawMessage(s)
 }
 
+// unforwardedFields names request inputs this backend cannot send. Dropping
+// them silently would answer a text-only question for a multimodal request.
+func unforwardedFields(opts *pb.PredictOptions) []string {
+	var out []string
+	for _, f := range []struct {
+		name string
+		set  bool
+	}{
+		{"images", len(opts.GetImages()) > 0},
+		{"audios", len(opts.GetAudios()) > 0},
+		{"videos", len(opts.GetVideos()) > 0},
+	} {
+		if f.set {
+			out = append(out, f.name)
+		}
+	}
+	return out
+}
+
 // replyFromChoice builds the Reply for one choice. Reasoning and tool calls
 // travel as ChatDeltas, the shape core already understands from other
 // backends.
@@ -225,6 +247,9 @@ func (r *Radiance) PredictRichContext(ctx context.Context, opts *pb.PredictOptio
 	if err := r.postJSON(ctx, ep, path, body, &resp); err != nil {
 		return nil, err
 	}
+	if resp.Error != nil {
+		return nil, status.Errorf(codes.Unavailable, "radiance: engine %s failed: %s", path, resp.Error.Message)
+	}
 	if len(resp.Choices) == 0 {
 		return nil, status.Errorf(codes.Internal, "radiance: engine %s returned no choices", path)
 	}
@@ -260,6 +285,34 @@ func (r *Radiance) PredictStreamRichContext(ctx context.Context, opts *pb.Predic
 		}
 	}
 
+	// An engine that ignores stream=true answers with one JSON body. Emitting
+	// it keeps the caller from receiving an empty stream.
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		var whole textResponse
+		if err := json.NewDecoder(resp.Body).Decode(&whole); err != nil {
+			return status.Errorf(codes.Internal, "radiance: engine %s returned neither an SSE stream nor JSON: %v", path, err)
+		}
+		if whole.Error != nil {
+			return status.Errorf(codes.Unavailable, "radiance: engine %s failed: %s", path, whole.Error.Message)
+		}
+		if len(whole.Choices) == 0 && whole.Usage == nil {
+			return status.Errorf(codes.Internal, "radiance: engine %s returned no choices", path)
+		}
+		for _, c := range whole.Choices {
+			reply := replyFromChoice(c, false)
+			if len(reply.GetMessage()) == 0 && len(reply.GetChatDeltas()) == 0 {
+				continue
+			}
+			if err := put(reply); err != nil {
+				return err
+			}
+		}
+		if whole.Usage != nil {
+			return put(usageReply(whole.Usage))
+		}
+		return nil
+	}
+
 	scanner := bufio.NewScanner(resp.Body)
 	// A single frame can carry a long tool-call argument chunk.
 	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
@@ -284,12 +337,6 @@ func (r *Radiance) PredictStreamRichContext(ctx context.Context, opts *pb.Predic
 			xlog.Warn("radiance: engine stream error", "path", path, "error", chunk.Error.Message)
 			return status.Errorf(codes.Unavailable, "radiance: engine %s stream failed: %s", path, chunk.Error.Message)
 		}
-		if chunk.Usage != nil && len(chunk.Choices) == 0 {
-			if err := put(&pb.Reply{PromptTokens: chunk.Usage.PromptTokens, Tokens: chunk.Usage.CompletionTokens}); err != nil {
-				return err
-			}
-			continue
-		}
 		for _, c := range chunk.Choices {
 			reply := replyFromChoice(c, true)
 			if len(reply.GetMessage()) == 0 && len(reply.GetChatDeltas()) == 0 {
@@ -299,11 +346,22 @@ func (r *Radiance) PredictStreamRichContext(ctx context.Context, opts *pb.Predic
 				return err
 			}
 		}
+		// include_usage normally arrives as its own frame with no choices, but
+		// some servers attach it to the last content frame.
+		if chunk.Usage != nil {
+			if err := put(usageReply(chunk.Usage)); err != nil {
+				return err
+			}
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return transportError(path, err)
 	}
 	return nil
+}
+
+func usageReply(u *usage) *pb.Reply {
+	return &pb.Reply{PromptTokens: u.PromptTokens, Tokens: u.CompletionTokens}
 }
 
 // Predict is the legacy string path; the gRPC server prefers PredictRich.

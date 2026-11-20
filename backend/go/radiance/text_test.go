@@ -187,6 +187,16 @@ var _ = Describe("text", func() {
 			Expect(codeOf(err)).To(Equal(codes.Internal))
 		})
 
+		It("returns an in-body error as Unavailable", func() {
+			up.replyJSON("/v1/completions", map[string]any{
+				"error": map[string]any{"message": "no slots available"},
+			})
+			r := testBackend(up.URL)
+			_, err := r.PredictRich(&pb.PredictOptions{Prompt: "x"})
+			Expect(codeOf(err)).To(Equal(codes.Unavailable))
+			Expect(err.Error()).To(ContainSubstring("no slots available"))
+		})
+
 		It("reports an unloaded backend as FailedPrecondition", func() {
 			_, err := NewRadiance().PredictRich(&pb.PredictOptions{Prompt: "x"})
 			Expect(codeOf(err)).To(Equal(codes.FailedPrecondition))
@@ -278,6 +288,39 @@ var _ = Describe("text", func() {
 			Expect(string((<-results).GetMessage())).To(Equal("b"))
 		})
 
+		It("emits a non-stream JSON body when the engine ignores stream", func() {
+			up.script("/v1/chat/completions", scriptedResponse{Status: http.StatusOK, Body: sseJSON(map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{"content": "whole"}}},
+				"usage":   map[string]any{"prompt_tokens": 1, "completion_tokens": 2},
+			})})
+			r := testBackend(up.URL)
+			results := make(chan *pb.Reply, 10)
+			Expect(r.PredictStreamRich(&pb.PredictOptions{
+				Messages: []*pb.Message{{Role: "user", Content: "hi"}},
+			}, results)).To(Succeed())
+			Expect(results).To(HaveLen(2))
+			Expect(string((<-results).GetMessage())).To(Equal("whole"))
+			usage := <-results
+			Expect(usage.GetPromptTokens()).To(Equal(int32(1)))
+			Expect(usage.GetTokens()).To(Equal(int32(2)))
+		})
+
+		It("reports usage attached to a content frame", func() {
+			up.script("/v1/completions", scriptedResponse{SSE: []string{
+				sseJSON(map[string]any{
+					"choices": []any{map[string]any{"text": "x"}},
+					"usage":   map[string]any{"prompt_tokens": 2, "completion_tokens": 1},
+				}),
+				"[DONE]",
+			}})
+			r := testBackend(up.URL)
+			results := make(chan *pb.Reply, 10)
+			Expect(r.PredictStreamRich(&pb.PredictOptions{Prompt: "go"}, results)).To(Succeed())
+			Expect(results).To(HaveLen(2))
+			Expect(string((<-results).GetMessage())).To(Equal("x"))
+			Expect((<-results).GetPromptTokens()).To(Equal(int32(2)))
+		})
+
 		It("returns a mid-stream error frame as Unavailable", func() {
 			up.script("/v1/chat/completions", scriptedResponse{SSE: []string{
 				sseJSON(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"content": "partial"}}}}),
@@ -334,6 +377,16 @@ var _ = Describe("text", func() {
 			}
 			Expect(got).To(Equal([]string{"s1"}))
 		})
+	})
+})
+
+var _ = Describe("unforwardedFields", func() {
+	It("names media the backend cannot forward", func() {
+		Expect(unforwardedFields(&pb.PredictOptions{})).To(BeEmpty())
+		Expect(unforwardedFields(&pb.PredictOptions{Images: []string{"i"}})).To(Equal([]string{"images"}))
+		Expect(unforwardedFields(&pb.PredictOptions{
+			Audios: []string{"a"}, Videos: []string{"v"},
+		})).To(Equal([]string{"audios", "videos"}))
 	})
 })
 

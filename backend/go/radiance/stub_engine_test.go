@@ -37,6 +37,12 @@ func runStub(mode string) {
 		os.Exit(2)
 	}
 
+	// Records which value of RADIANCE_STUB_PROBE the child actually received,
+	// so a test can prove the model's environment overrides the inherited one.
+	if p := os.Getenv("RADIANCE_STUB_ENV_LOG"); p != "" {
+		_ = os.WriteFile(p, []byte(os.Getenv("RADIANCE_STUB_PROBE")), 0o600)
+	}
+
 	cfgPath := ""
 	args := os.Args[1:]
 	for i, a := range args {

@@ -53,7 +53,8 @@ syntax (`900s`, `15m`).
 | `config_out` | none | Path where the generated (or rendered) YAML is also written, for debugging. |
 
 The process environment is passed to the engine unchanged, plus every entry of the model config's
-`environment` map (`opts.GetEnvVars()`). ROCm/HIP variables therefore reach the engine.
+`environment` map (`opts.GetEnvVars()`); an entry whose name matches an inherited variable wins.
+ROCm/HIP variables therefore reach the engine.
 
 The generated file is:
 
@@ -121,7 +122,9 @@ Mapped fields: `max_tokens`, `temperature` (always sent, so 0 means greedy), `to
 Streaming uses the engine's SSE stream and stops at `data: [DONE]`. Content lands in
 `Reply.message`, reasoning in `ChatDelta.reasoning_content`, and tool calls in
 `ChatDelta.tool_calls` (index, id, name, argument chunks). With `stream_options.include_usage` the
-final usage frame supplies `prompt_tokens`/`tokens`. A stream error frame is returned as
+final usage frame supplies `prompt_tokens`/`tokens`; usage attached to a content frame is reported
+too. If the engine answers a streaming request with a single JSON body instead of SSE, that body is
+emitted as one delta. A stream error frame is returned as
 `Unavailable`; a non-2xx reply is mapped to a gRPC code (4xx `InvalidArgument`, 5xx `Unavailable`,
 429 `ResourceExhausted`, 501 `Unimplemented`) with the engine body in the message.
 

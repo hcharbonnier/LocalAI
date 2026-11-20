@@ -196,11 +196,13 @@ func locateModel(opts *pb.ModelOptions) (artifact, name string, err error) {
 	if artifact == "" {
 		return "", "", errors.New("radiance: the model config names no model")
 	}
-	if p, ok := findModelPath(artifact, opts.GetModelPath()); ok {
+	p, ok, exists := findModelPath(artifact, opts.GetModelPath())
+	switch {
+	case ok:
 		artifact = p
-	} else if pathExists(artifact) {
+	case exists:
 		return "", "", fmt.Errorf("radiance: %q is not a .rad/.gguf/.safetensors file or an HF checkpoint directory", artifact)
-	} else if !isRepoID(artifact) {
+	case !isRepoID(artifact):
 		return "", "", fmt.Errorf("radiance: %q is neither a .rad/.gguf/.safetensors file, an HF checkpoint directory, nor an HF repo id (owner/name)", artifact)
 	}
 	if name == "" {
@@ -209,7 +211,10 @@ func locateModel(opts *pb.ModelOptions) (artifact, name string, err error) {
 	return artifact, name, nil
 }
 
-func findModelPath(p, modelsPath string) (string, bool) {
+// findModelPath returns the usable artifact and whether any candidate existed.
+// A candidate that exists but is not a supported form must fail the load
+// instead of being mistaken for an HF repo id.
+func findModelPath(p, modelsPath string) (path string, found, exists bool) {
 	cands := []string{p}
 	if !filepath.IsAbs(p) && modelsPath != "" {
 		cands = append(cands, filepath.Join(modelsPath, p))
@@ -219,17 +224,18 @@ func findModelPath(p, modelsPath string) (string, bool) {
 		if err != nil {
 			continue
 		}
+		exists = true
 		if st.IsDir() {
 			if isCheckpointDir(c) {
-				return c, true
+				return c, true, true
 			}
 			continue
 		}
 		if isModelFile(c) {
-			return c, true
+			return c, true, true
 		}
 	}
-	return "", false
+	return "", false, exists
 }
 
 func isCheckpointDir(dir string) bool {
@@ -327,11 +333,6 @@ func firstNonEmpty(vs ...string) string {
 func fileExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && !st.IsDir()
-}
-
-func pathExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
 }
 
 // render produces the YAML the engine is started with, or the rendered

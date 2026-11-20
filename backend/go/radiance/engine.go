@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +23,7 @@ import (
 type engineConfig struct {
 	Path         string        // engine executable
 	ConfigPath   string        // radiance.yaml handed to --config
-	Env          []string      // extra KEY=VALUE entries on top of os.Environ()
+	Env          []string      // extra KEY=VALUE entries; they override os.Environ()
 	ReadyTimeout time.Duration // how long to wait for GET /health to return 200
 	StopTimeout  time.Duration // how long the engine may take to exit after SIGTERM
 	BaseURL      string        // http://host:port of the engine
@@ -38,7 +38,9 @@ type engine struct {
 	exited  chan struct{}
 	waitErr error
 
-	tail *tailBuffer
+	tail   *tailBuffer
+	stdout *lineWriter
+	stderr *lineWriter
 
 	mu      sync.Mutex
 	killing bool
@@ -47,6 +49,12 @@ type engine struct {
 const (
 	engineTailLines = 50
 	engineTailBytes = 4096
+
+	// engineReapTimeout bounds the wait for Cmd.Wait after a kill. A helper
+	// process that inherited the engine's stdout/stderr can keep Cmd.Wait
+	// waiting on the copy goroutines even after the direct child is dead;
+	// Free and Load must still return.
+	engineReapTimeout = 5 * time.Second
 )
 
 // startEngine starts the engine and waits until its health endpoint reports
@@ -65,6 +73,9 @@ func startEngine(cfg engineConfig) (*engine, error) {
 	if cfg.ConfigPath == "" {
 		return nil, errors.New("radiance: engine config path is empty")
 	}
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, errors.New("radiance: engine base URL is empty")
+	}
 
 	path, err := filepath.Abs(cfg.Path)
 	if err != nil {
@@ -79,17 +90,8 @@ func startEngine(cfg engineConfig) (*engine, error) {
 	}
 
 	cmd := exec.Command(path, "--config", cfg.ConfigPath) // #nosec G204 -- absolute engine binary from the model's engine_path option, no shell, argv only
-	cmd.Env = append(os.Environ(), cfg.Env...)
+	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
 	setChildAttrs(cmd)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
 
 	e := &engine{
 		cfg:    cfg,
@@ -97,14 +99,19 @@ func startEngine(cfg engineConfig) (*engine, error) {
 		exited: make(chan struct{}),
 		tail:   &tailBuffer{maxLines: engineTailLines, maxBytes: engineTailBytes},
 	}
+	// Writers rather than StdoutPipe: Cmd.Wait then waits for the copies to
+	// finish, so the last stderr lines are in the tail before the error is
+	// built. Reading a StdoutPipe concurrently with Wait can lose them.
+	e.stdout = newLineWriter(e.tail, "stdout")
+	e.stderr = newLineWriter(e.tail, "stderr")
+	cmd.Stdout = e.stdout
+	cmd.Stderr = e.stderr
 
 	started := make(chan error, 1)
 	go e.supervise(started)
 	if err := <-started; err != nil {
 		return nil, fmt.Errorf("radiance: start engine %s: %w", path, err)
 	}
-	go e.pump(stdout, "stdout")
-	go e.pump(stderr, "stderr")
 
 	if err := e.waitReady(); err != nil {
 		e.kill()
@@ -125,36 +132,88 @@ func (e *engine) supervise(started chan<- error) {
 		return
 	}
 	e.waitErr = e.cmd.Wait()
+	e.stdout.flush()
+	e.stderr.flush()
 	close(e.exited)
 }
 
-// pump reads one stream line by line and keeps a bounded tail. An overlong
-// line is truncated rather than buffered without bound.
-func (e *engine) pump(r io.Reader, stream string) {
-	br := bufio.NewReaderSize(r, 64*1024)
-	var line []byte
-	for {
-		chunk, err := br.ReadSlice('\n')
-		if len(line) < engineTailBytes {
-			room := engineTailBytes - len(line)
-			if len(chunk) > room {
-				chunk = chunk[:room]
-			}
-			line = append(line, chunk...)
-		}
-		if err == bufio.ErrBufferFull {
+// mergeEnv lets the model's environment override the backend's own. Appending
+// would not: on Linux getenv returns the first match, so the inherited value
+// would win.
+func mergeEnv(base, extra []string) []string {
+	out := make([]string, 0, len(base)+len(extra))
+	index := make(map[string]int, len(base)+len(extra))
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		index[k] = len(out)
+		out = append(out, kv)
+	}
+	for _, kv := range extra {
+		k, _, _ := strings.Cut(kv, "=")
+		if i, ok := index[k]; ok {
+			out[i] = kv
 			continue
 		}
-		if len(line) > 0 {
-			text := strings.TrimRight(string(line), "\r\n")
-			e.tail.add(stream, text)
-			xlog.Debug("radiance engine", "stream", stream, "line", text)
-			line = line[:0]
-		}
-		if err != nil {
-			return
-		}
+		index[k] = len(out)
+		out = append(out, kv)
 	}
+	return out
+}
+
+// lineWriter turns a child stream into bounded log lines. Each stream has its
+// own partial line, and the tail itself is shared and locked.
+type lineWriter struct {
+	mu      sync.Mutex
+	tail    *tailBuffer
+	stream  string
+	partial []byte
+}
+
+func newLineWriter(tail *tailBuffer, stream string) *lineWriter {
+	return &lineWriter{tail: tail, stream: stream}
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			w.appendLocked(p)
+			break
+		}
+		w.appendLocked(p[:i])
+		w.flushLocked()
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+func (w *lineWriter) appendLocked(b []byte) {
+	if len(w.partial) >= engineTailBytes {
+		return
+	}
+	if room := engineTailBytes - len(w.partial); len(b) > room {
+		b = b[:room]
+	}
+	w.partial = append(w.partial, b...)
+}
+
+func (w *lineWriter) flushLocked() {
+	if len(w.partial) == 0 {
+		return
+	}
+	text := strings.TrimRight(string(w.partial), "\r")
+	w.tail.add(w.stream, text)
+	xlog.Debug("radiance engine", "stream", w.stream, "line", text)
+	w.partial = w.partial[:0]
+}
+
+func (w *lineWriter) flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.flushLocked()
 }
 
 func (e *engine) waitReady() error {
@@ -228,7 +287,7 @@ func (e *engine) kill() {
 	e.mu.Lock()
 	if e.killing {
 		e.mu.Unlock()
-		<-e.exited
+		e.waitExit(engineReapTimeout)
 		return
 	}
 	e.killing = true
@@ -237,7 +296,15 @@ func (e *engine) kill() {
 	if e.cmd.Process != nil {
 		_ = e.cmd.Process.Kill()
 	}
-	<-e.exited
+	e.waitExit(engineReapTimeout)
+}
+
+func (e *engine) waitExit(timeout time.Duration) {
+	select {
+	case <-e.exited:
+	case <-time.After(timeout):
+		xlog.Warn("radiance: engine was killed but has not been reaped", "pid", e.pid(), "timeout", timeout)
+	}
 }
 
 // close asks the engine to stop, then kills it after stop_timeout.

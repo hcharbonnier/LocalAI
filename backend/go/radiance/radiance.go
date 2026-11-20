@@ -27,6 +27,11 @@ import (
 type Radiance struct {
 	base.Base
 
+	// loadMu serialises Load and Free. Without it two concurrent loads each
+	// start an engine and the loser is overwritten and never stopped, leaving
+	// a process on the GPU.
+	loadMu sync.Mutex
+
 	mu      sync.Mutex
 	eng     *engine
 	cfgPath string
@@ -43,6 +48,9 @@ func NewRadiance() *Radiance {
 }
 
 func (r *Radiance) Load(opts *pb.ModelOptions) error {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+
 	c, err := parseOptions(opts)
 	if err != nil {
 		return err
@@ -124,6 +132,8 @@ func writeEngineConfig(data []byte) (string, error) {
 }
 
 func (r *Radiance) Free() error {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.releaseLocked()
