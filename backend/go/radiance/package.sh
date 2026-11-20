@@ -6,6 +6,7 @@
 #   run.sh            entry point; points the shim at the engine and its data
 #   share/radiance/   kernels and recipes (RADIANCE_HOME)
 #   libexec/radiance/ engine helper programs, when the build produces any
+#   lib/              ROCm shared-library closure and ld.so, when staged
 #   LICENSE, NOTICE   upstream Apache-2.0 attribution
 #
 # The engine build unit stages its output here before this script runs. Every
@@ -18,6 +19,7 @@ CURDIR=$(dirname "$(realpath "$0")")
 ENGINE_BIN=${RADIANCE_ENGINE_BIN:-$CURDIR/radiance-engine}
 SHARE_DIR=${RADIANCE_SHARE_DIR:-$CURDIR/share/radiance}
 LIBEXEC_DIR=${RADIANCE_LIBEXEC_DIR:-$CURDIR/libexec/radiance}
+LIB_DIR=${RADIANCE_LIB_DIR:-$CURDIR/lib}
 
 if [ ! -x "$CURDIR/radiance" ]; then
 	echo "ERROR: $CURDIR/radiance is missing, run 'make radiance' first" >&2
@@ -69,6 +71,13 @@ fi
 if [ -d "$LIBEXEC_DIR" ]; then
 	mkdir -p "$CURDIR/package/libexec"
 	cp -af "$LIBEXEC_DIR" "$CURDIR/package/libexec/radiance"
+fi
+
+if [ -d "$LIB_DIR" ]; then
+	cp -af "$LIB_DIR" "$CURDIR/package/lib"
+else
+	echo "WARNING: $LIB_DIR is missing; the extracted tree will rely on the host's ROCm libraries" >&2
+	mkdir -p "$CURDIR/package/lib"
 fi
 
 echo "Packaging completed successfully"

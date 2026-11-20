@@ -18,12 +18,18 @@ radiance-engine              the engine (built from the pinned upstream tag)
 run.sh                       entry point; sets RADIANCE_ENGINE_PATH and RADIANCE_HOME
 share/radiance/              kernels and recipes (RADIANCE_HOME)
 libexec/radiance/            engine helper programs, when the build produces any
+lib/                         ROCm shared-library closure and ld.so, when present
 LICENSE, NOTICE              upstream attribution
 ```
 
 The engine is installed in the upstream layout (`bin/`, `libexec/radiance/`,
 `share/radiance/{kernels,recipes}`). `run.sh` points `RADIANCE_HOME` at the packaged
 `share/radiance`; `RADIANCE_KERNELS` and `OMP_NUM_THREADS` still override the engine's choices.
+
+A `FROM scratch` image has no `/etc/ld.so.cache`, so when the image tree is extracted into a
+backend directory its `lib/` holds the loader and the ROCm closure. `run.sh` puts `lib/` first on
+`LD_LIBRARY_PATH` (the engine inherits it) and, when `lib/ld.so` exists, starts the shim through
+that loader. A local install without `lib/` falls back to the host's loader and libraries.
 
 ## Options
 
@@ -172,5 +178,6 @@ SSE parsing, tool calls, reasoning, usage and error mapping run against `httptes
 
 `make package` runs `package.sh`, which expects the engine binary staged as `radiance-engine` next
 to the shim (or `RADIANCE_ENGINE_BIN`), the `share/radiance` and `libexec/radiance` trees (or
-`RADIANCE_SHARE_DIR` / `RADIANCE_LIBEXEC_DIR`), and an upstream `LICENSE` and `NOTICE` (next to
-`package.sh` or under `sources/radiance/`). It copies all of them into `package/`.
+`RADIANCE_SHARE_DIR` / `RADIANCE_LIBEXEC_DIR`), the ROCm library closure in `lib/` (or
+`RADIANCE_LIB_DIR`), and an upstream `LICENSE` and `NOTICE` (next to `package.sh` or under
+`sources/radiance/`). It copies all of them into `package/`.
