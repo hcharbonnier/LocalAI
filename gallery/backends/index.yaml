@@ -43323,7 +43323,7 @@
   arch: amd64
   artifact: oci://quay.io/go-skynet/local-ai-backends:master-gpu-rocm-hipblas-radiance
   capabilities:
-    amd: rocm-radiance-development
+    amd: rocm-radiance
   channel: development
   description: |
     StillDeadcode/radiance - an Apache-2.0 C++20/HIP inference server for AMD

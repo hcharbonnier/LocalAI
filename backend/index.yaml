@@ -29537,7 +29537,7 @@
     - text-to-text
     - HIP
   capabilities:
-    amd: rocm-radiance-development
+    amd: rocm-radiance
   uri: quay.io/go-skynet/local-ai-backends:master-gpu-rocm-hipblas-radiance
   mirrors:
     - localai/localai-backends:master-gpu-rocm-hipblas-radiance
