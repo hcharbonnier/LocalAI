@@ -159,6 +159,32 @@ var _ = Describe("Backend hooks and parser defaults", func() {
 		})
 	})
 
+	Context("radiance hook", func() {
+		It("defaults a chat config to the tokenizer template so Radiance applies its own", func() {
+			cfg := &ModelConfig{Backend: "radiance", KnownUsecaseStrings: []string{"chat"}}
+			cfg.SetDefaults()
+			Expect(cfg.TemplateConfig.UseTokenizerTemplate).To(BeTrue())
+		})
+
+		It("leaves non-chat and undeclared configs alone so they are not guessed as chat", func() {
+			cfg := &ModelConfig{Backend: "radiance", KnownUsecaseStrings: []string{"transcript"}}
+			cfg.SetDefaults()
+			Expect(cfg.TemplateConfig.UseTokenizerTemplate).To(BeFalse())
+			Expect(cfg.HasUsecases(FLAG_CHAT)).To(BeFalse())
+
+			bare := &ModelConfig{Backend: "radiance"}
+			bare.SetDefaults()
+			Expect(bare.TemplateConfig.UseTokenizerTemplate).To(BeFalse())
+		})
+
+		It("keeps a config that brings its own templates", func() {
+			cfg := &ModelConfig{Backend: "radiance", KnownUsecaseStrings: []string{"chat"}}
+			cfg.TemplateConfig.Chat = "{{.Input}}"
+			cfg.SetDefaults()
+			Expect(cfg.TemplateConfig.UseTokenizerTemplate).To(BeFalse())
+		})
+	})
+
 	Context("vllmDefaults hook", func() {
 		It("auto-sets parsers for known model families on vllm backend", func() {
 			cfg := &ModelConfig{
@@ -275,7 +301,7 @@ var _ = Describe("Backend hooks and parser defaults", func() {
 			// the metadata-reading path the optimization touches is unaffected.
 			ctxSize := 4096
 			cfg := &ModelConfig{
-				Backend: "llama-cpp",
+				Backend:   "llama-cpp",
 				LLMConfig: LLMConfig{ContextSize: &ctxSize},
 				PredictionOptions: schema.PredictionOptions{
 					BasicModelRequest: schema.BasicModelRequest{Model: modelFile},

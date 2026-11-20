@@ -53,6 +53,7 @@ const (
 	// tags. See the two preference tables below for why the distinction matters.
 	engineVLLM     = "vllm"
 	engineSGLang   = "sglang"
+	engineRadiance = "radiance"
 	engineLlamaCpp = "llama-cpp"
 	engineMLX      = "mlx"
 
@@ -159,7 +160,10 @@ var engineNamePreferenceRules = []backendPreferenceRule{
 	// cuda/rocm/intel builds alike, but it is behind vLLM because vLLM covers
 	// far more of the gallery. llama-cpp is the portable fallback.
 	{Nvidia, []string{engineVLLM, engineSGLang, engineLlamaCpp}},
-	{AMD, []string{engineVLLM, engineSGLang, engineLlamaCpp}},
+	// Radiance is the ROCm-native server, so it leads on the one vendor it
+	// targets: a model published with a radiance build is published for an AMD
+	// host. It is absent from every other rule because it does not run there.
+	{AMD, []string{engineRadiance, engineVLLM, engineSGLang, engineLlamaCpp}},
 	{Intel, []string{engineVLLM, engineSGLang, engineLlamaCpp}},
 	// MLX is the native accelerated runtime on Apple silicon, whereas a
 	// metal-enabled GGUF build is the portable engine merely compiled with GPU
