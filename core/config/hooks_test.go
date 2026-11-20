@@ -183,6 +183,12 @@ var _ = Describe("Backend hooks and parser defaults", func() {
 			cfg.SetDefaults()
 			Expect(cfg.TemplateConfig.UseTokenizerTemplate).To(BeFalse())
 		})
+
+		It("matches only the radiance backend name", func() {
+			cfg := &ModelConfig{Backend: "cloud-proxy", KnownUsecaseStrings: []string{"chat"}}
+			cfg.SetDefaults()
+			Expect(cfg.TemplateConfig.UseTokenizerTemplate).To(BeFalse())
+		})
 	})
 
 	Context("vllmDefaults hook", func() {
