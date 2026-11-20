@@ -1,5 +1,5 @@
 # Disable parallel execution for backend builds
-.NOTPARALLEL: backends/diffusers backends/llama-cpp backends/turboquant backends/bonsai backends/outetts backends/piper backends/stablediffusion-ggml backends/trellis2cpp backends/trellis2cpp-darwin backends/whisper backends/crispasr backends/parakeet-cpp backends/moss-transcribe-cpp backends/nemo-speech-cpp backends/faster-whisper backends/silero-vad backends/local-store backends/valkey-store backends/qdrant-store backends/cloud-proxy backends/localai-proxy backends/huggingface backends/rfdetr backends/rfdetr-cpp backends/insightface backends/speaker-recognition backends/kitten-tts backends/kokoro backends/chatterbox backends/llama-cpp-darwin backends/neutts build-darwin-python-backend build-darwin-go-backend backends/mlx backends/mlx-video backends/diffuser-darwin backends/mlx-vlm backends/mlx-audio backends/mlx-distributed backends/stablediffusion-ggml-darwin backends/vllm backends/vllm-omni backends/longcat-video backends/sglang backends/moonshine backends/pocket-tts backends/qwen-tts backends/faster-qwen3-tts backends/qwen-asr backends/nemo backends/voxcpm backends/whisperx backends/ace-step backends/acestep-cpp backends/fish-speech backends/voxtral backends/opus backends/trl backends/llama-cpp-quantization backends/kokoros backends/sam3-cpp backends/qwen3-tts-cpp backends/moss-tts-cpp backends/magpie-tts-cpp backends/vllm-cpp backends/omnivoice-cpp backends/vibevoice-cpp backends/localvqe backends/tinygrad backends/sherpa-onnx backends/ds4 backends/ds4-darwin backends/supertonic backends/depth-anything-cpp backends/timestral-cpp backends/privacy-filter backends/privacy-filter-darwin backends/audio-cpp backends/audio-cpp-darwin backends/strata
+.NOTPARALLEL: backends/diffusers backends/llama-cpp backends/turboquant backends/bonsai backends/outetts backends/piper backends/stablediffusion-ggml backends/trellis2cpp backends/trellis2cpp-darwin backends/whisper backends/crispasr backends/parakeet-cpp backends/moss-transcribe-cpp backends/nemo-speech-cpp backends/faster-whisper backends/silero-vad backends/local-store backends/valkey-store backends/qdrant-store backends/cloud-proxy backends/localai-proxy backends/huggingface backends/rfdetr backends/rfdetr-cpp backends/insightface backends/speaker-recognition backends/kitten-tts backends/kokoro backends/chatterbox backends/llama-cpp-darwin backends/neutts build-darwin-python-backend build-darwin-go-backend backends/mlx backends/mlx-video backends/diffuser-darwin backends/mlx-vlm backends/mlx-audio backends/mlx-distributed backends/stablediffusion-ggml-darwin backends/vllm backends/vllm-omni backends/longcat-video backends/sglang backends/moonshine backends/pocket-tts backends/qwen-tts backends/faster-qwen3-tts backends/qwen-asr backends/nemo backends/voxcpm backends/whisperx backends/ace-step backends/acestep-cpp backends/fish-speech backends/voxtral backends/opus backends/trl backends/llama-cpp-quantization backends/kokoros backends/sam3-cpp backends/qwen3-tts-cpp backends/moss-tts-cpp backends/magpie-tts-cpp backends/vllm-cpp backends/omnivoice-cpp backends/vibevoice-cpp backends/localvqe backends/tinygrad backends/sherpa-onnx backends/ds4 backends/ds4-darwin backends/supertonic backends/depth-anything-cpp backends/timestral-cpp backends/privacy-filter backends/privacy-filter-darwin backends/audio-cpp backends/audio-cpp-darwin backends/strata backends/radiance
 .NOTPARALLEL: backends/whisper-medusa
 .NOTPARALLEL: backends/funasr
 .NOTPARALLEL: backends/llama-cpp-windows backends/llama-cpp-windows-all backends/llama-cpp-windows-cpu backends/llama-cpp-windows-vulkan backends/llama-cpp-windows-cuda backends/llama-cpp-windows-rpc backends/llama-cpp-windows-fallback
@@ -748,6 +748,7 @@ prepare-test-extra: protogen-python
 	$(MAKE) -C backend/go/valkey-store
 	$(MAKE) -C backend/go/qdrant-store
 	$(MAKE) -C backend/go/strata
+	$(MAKE) -C backend/go/radiance
 
 test-extra: prepare-test-extra
 	$(MAKE) -C backend/python/transformers test
@@ -790,6 +791,7 @@ test-extra: prepare-test-extra
 	$(MAKE) -C backend/go/valkey-store test
 	$(MAKE) -C backend/go/qdrant-store test
 	$(MAKE) -C backend/go/strata test
+	$(MAKE) -C backend/go/radiance test
 
 ##
 ## End-to-end gRPC tests that exercise a built backend container image.
@@ -1552,6 +1554,10 @@ BACKEND_PRIVACY_FILTER = privacy-filter|privacy-filter|.|false|false
 # against apt gRPC/protobuf rather than a prebuilt base-grpc image; the reason
 # is on the audio-cpp block in .github/backend-matrix.yml.
 BACKEND_AUDIO_CPP = audio-cpp|audio-cpp|.|false|false
+# radiance runs the StillDeadcode/radiance C++20/HIP inference server as a child
+# process; the bespoke Dockerfile.radiance builds the backend/go/radiance Go
+# wrapper against the ROCm/HIP engine.
+BACKEND_RADIANCE = radiance|radiance|.|false|false
 
 # Golang backends
 BACKEND_PIPER = piper|golang|.|false|true
@@ -1665,6 +1671,7 @@ $(eval $(call generate-docker-build-target,$(BACKEND_BONSAI)))
 $(eval $(call generate-docker-build-target,$(BACKEND_DS4)))
 $(eval $(call generate-docker-build-target,$(BACKEND_PRIVACY_FILTER)))
 $(eval $(call generate-docker-build-target,$(BACKEND_AUDIO_CPP)))
+$(eval $(call generate-docker-build-target,$(BACKEND_RADIANCE)))
 $(eval $(call generate-docker-build-target,$(BACKEND_PIPER)))
 $(eval $(call generate-docker-build-target,$(BACKEND_LOCAL_STORE)))
 $(eval $(call generate-docker-build-target,$(BACKEND_VALKEY_STORE)))
@@ -1755,7 +1762,7 @@ $(eval $(call generate-docker-build-target,$(BACKEND_SUPERTONIC)))
 docker-save-%: backend-images
 	docker save local-ai-backend:$* -o backend-images/$*.tar
 
-docker-build-backends: docker-build-llama-cpp docker-build-ik-llama-cpp docker-build-turboquant docker-build-bonsai docker-build-ds4 docker-build-rerankers docker-build-vllm docker-build-vllm-omni docker-build-longcat-video docker-build-sglang docker-build-transformers docker-build-outetts docker-build-diffusers docker-build-kokoro docker-build-faster-whisper docker-build-crispasr docker-build-coqui docker-build-chatterbox docker-build-vibevoice docker-build-moonshine docker-build-pocket-tts docker-build-qwen-tts docker-build-fish-speech docker-build-faster-qwen3-tts docker-build-qwen-asr docker-build-nemo docker-build-voxcpm docker-build-whisperx docker-build-ace-step docker-build-acestep-cpp docker-build-voxtral docker-build-mlx-distributed docker-build-trl docker-build-llama-cpp-quantization docker-build-tinygrad docker-build-kokoros docker-build-sam3-cpp docker-build-rfdetr-cpp docker-build-qwen3-tts-cpp docker-build-moss-tts-cpp docker-build-magpie-tts-cpp docker-build-vllm-cpp docker-build-omnivoice-cpp docker-build-vibevoice-cpp docker-build-localvqe docker-build-insightface docker-build-speaker-recognition docker-build-sherpa-onnx docker-build-cloud-proxy docker-build-localai-proxy docker-build-supertonic docker-build-depth-anything-cpp docker-build-moss-transcribe-cpp docker-build-nemo-speech-cpp docker-build-privacy-filter docker-build-trellis2cpp docker-build-valkey-store docker-build-qdrant-store docker-build-audio-cpp docker-build-timestral-cpp docker-build-strata
+docker-build-backends: docker-build-llama-cpp docker-build-ik-llama-cpp docker-build-turboquant docker-build-bonsai docker-build-ds4 docker-build-rerankers docker-build-vllm docker-build-vllm-omni docker-build-longcat-video docker-build-sglang docker-build-transformers docker-build-outetts docker-build-diffusers docker-build-kokoro docker-build-faster-whisper docker-build-crispasr docker-build-coqui docker-build-chatterbox docker-build-vibevoice docker-build-moonshine docker-build-pocket-tts docker-build-qwen-tts docker-build-fish-speech docker-build-faster-qwen3-tts docker-build-qwen-asr docker-build-nemo docker-build-voxcpm docker-build-whisperx docker-build-ace-step docker-build-acestep-cpp docker-build-voxtral docker-build-mlx-distributed docker-build-trl docker-build-llama-cpp-quantization docker-build-tinygrad docker-build-kokoros docker-build-sam3-cpp docker-build-rfdetr-cpp docker-build-qwen3-tts-cpp docker-build-moss-tts-cpp docker-build-magpie-tts-cpp docker-build-vllm-cpp docker-build-omnivoice-cpp docker-build-vibevoice-cpp docker-build-localvqe docker-build-insightface docker-build-speaker-recognition docker-build-sherpa-onnx docker-build-cloud-proxy docker-build-localai-proxy docker-build-supertonic docker-build-depth-anything-cpp docker-build-moss-transcribe-cpp docker-build-nemo-speech-cpp docker-build-privacy-filter docker-build-trellis2cpp docker-build-valkey-store docker-build-qdrant-store docker-build-audio-cpp docker-build-timestral-cpp docker-build-strata docker-build-radiance
 docker-build-backends: docker-build-whisper-medusa
 docker-build-backends: docker-build-funasr
 
